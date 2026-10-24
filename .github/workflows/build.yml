@@ -1,0 +1,46 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal static libusb
+        run: |
+          curl -fsSL https://github.com/libusb/libusb/releases/download/v1.0.28/libusb-1.0.28.tar.bz2 | tar xj
+          cd libusb-1.0.28
+          ./configure --disable-shared --disable-dependency-tracking --prefix="$GITHUB_WORKSPACE/deps" \
+            CFLAGS="-O2 -arch arm64 -arch x86_64 -mmacosx-version-min=11.0"
+          make -j4 install
+
+      - name: Build rndis-bridge (universal, self-contained)
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/deps/lib/pkgconfig"
+          make static ARCHS="arm64 x86_64"
+          lipo -info rndis-bridge
+          otool -L rndis-bridge
+          ./rndis-bridge --version
+          tar czf rndis-bridge-macos-universal.tar.gz rndis-bridge README.md LICENSE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rndis-bridge-macos-universal
+          path: rndis-bridge-macos-universal.tar.gz
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" rndis-bridge-macos-universal.tar.gz --clobber
